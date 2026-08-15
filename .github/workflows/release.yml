@@ -30,33 +30,83 @@ jobs:
           python -m pip install -r requirements.txt pytest pyinstaller
 
       - name: Run tests
-        run: python -m pytest -q
+        shell: pwsh
+        run: |
+          python -m pytest -q
 
       - name: Build portable application
         shell: pwsh
         run: |
           python -m PyInstaller --clean --noconfirm packaging\SouthParkDownloader.spec
 
-      - name: Install Inno Setup
+      - name: Locate Inno Setup
         shell: pwsh
         run: |
-          choco install innosetup --no-progress --yes
+          Write-Host "Searching for Inno Setup..."
+
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe",
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+
+          $iscc = $candidates |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+
+          if (-not $iscc) {
+            Write-Host "Known locations did not contain ISCC.exe."
+            Write-Host ""
+            Write-Host "Searching the runner filesystem..."
+
+            $iscc = Get-ChildItem `
+              -Path "C:\Program Files", "C:\Program Files (x86)", "$env:LOCALAPPDATA" `
+              -Filter "ISCC.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $iscc) {
+            Write-Host ""
+            Write-Host "PATH:"
+            Write-Host $env:PATH
+
+            Write-Host ""
+            Write-Host "Chocolatey Inno Setup directory:"
+            if (Test-Path "C:\ProgramData\chocolatey\lib\InnoSetup") {
+              Get-ChildItem "C:\ProgramData\chocolatey\lib\InnoSetup" -Recurse |
+                Select-Object -ExpandProperty FullName
+            }
+
+            throw "ISCC.exe could not be found on the Windows runner."
+          }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "Inno Setup found:"
+          Write-Host $iscc
+          Write-Host "========================================"
+
+          "ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
 
       - name: Build installer
         shell: pwsh
         run: |
-          $iscc = @(
-            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-          if (-not $iscc) {
-            throw "Inno Setup 6 was not found after installation."
+          if (-not $env:ISCC_PATH) {
+            throw "ISCC_PATH was not set."
           }
 
-          Write-Host "Using Inno Setup: $iscc"
+          if (-not (Test-Path -LiteralPath $env:ISCC_PATH)) {
+            throw "ISCC.exe does not exist at: $env:ISCC_PATH"
+          }
 
-          & $iscc packaging\SouthParkDownloader.iss
+          Write-Host "Building installer with:"
+          Write-Host $env:ISCC_PATH
+
+          & $env:ISCC_PATH "packaging\SouthParkDownloader.iss"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE."
@@ -69,18 +119,26 @@ jobs:
             Select-Object -First 1
 
           if (-not $installer) {
+            Write-Host "Contents of dist:"
+            if (Test-Path "dist") {
+              Get-ChildItem "dist" -Recurse |
+                Select-Object FullName
+            }
+
             throw "Installer was not created in dist\installer."
           }
 
-          Write-Host "Installer created successfully:"
-          Write-Host $installer.FullName
+          Write-Host "========================================"
+          Write-Host "Installer created successfully"
+          Write-Host "File: $($installer.FullName)"
           Write-Host "Size: $($installer.Length) bytes"
+          Write-Host "========================================"
 
       - name: Zip portable build
         shell: pwsh
         run: |
           Compress-Archive `
-            -Path dist\SouthParkDownloader\* `
+            -Path "dist\SouthParkDownloader\*" `
             -DestinationPath "dist\SouthParkDownloader-${{ github.ref_name }}-portable.zip"
 
       - name: Upload build artifacts
