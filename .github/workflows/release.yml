@@ -34,7 +34,13 @@ jobs:
 
       - name: Build portable application
         shell: pwsh
-        run: python -m PyInstaller --clean --noconfirm packaging\SouthParkDownloader.spec
+        run: |
+          python -m PyInstaller --clean --noconfirm packaging\SouthParkDownloader.spec
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress --yes
 
       - name: Build installer
         shell: pwsh
@@ -43,12 +49,39 @@ jobs:
             "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $iscc) { throw "Inno Setup 6 was not found on the runner." }
+
+          if (-not $iscc) {
+            throw "Inno Setup 6 was not found after installation."
+          }
+
+          Write-Host "Using Inno Setup: $iscc"
+
           & $iscc packaging\SouthParkDownloader.iss
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "dist\installer\*.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $installer) {
+            throw "Installer was not created in dist\installer."
+          }
+
+          Write-Host "Installer created successfully:"
+          Write-Host $installer.FullName
+          Write-Host "Size: $($installer.Length) bytes"
 
       - name: Zip portable build
         shell: pwsh
-        run: Compress-Archive -Path dist\SouthParkDownloader\* -DestinationPath dist\SouthParkDownloader-${{ github.ref_name }}-portable.zip
+        run: |
+          Compress-Archive `
+            -Path dist\SouthParkDownloader\* `
+            -DestinationPath "dist\SouthParkDownloader-${{ github.ref_name }}-portable.zip"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
