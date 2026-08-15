@@ -64,9 +64,9 @@ jobs:
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
 
       # ------------------------------------------------------------
-      # Build PyInstaller application
+      # Build application with PyInstaller
       # ------------------------------------------------------------
-      - name: Build portable application
+      - name: Build application
         shell: pwsh
         run: |
           python -m PyInstaller `
@@ -76,29 +76,45 @@ jobs:
             packaging\SouthParkDownloader.spec
 
       # ------------------------------------------------------------
-      # Inspect PyInstaller output
+      # Verify PyInstaller output
       # ------------------------------------------------------------
-      - name: Inspect PyInstaller output
+      - name: Verify PyInstaller output
         shell: pwsh
         run: |
+          $exe = "dist\SouthParkDownloader.exe"
+
           Write-Host ""
-          Write-Host "========== DIST DIRECTORY =========="
+          Write-Host "========== PYINSTALLER OUTPUT =========="
           Write-Host ""
 
-          if (-not (Test-Path "dist")) {
-            throw "dist directory was not created."
+          if (-not (Test-Path -LiteralPath $exe)) {
+            Write-Host "Expected executable was not found:"
+            Write-Host $exe
+            Write-Host ""
+            Write-Host "Actual dist contents:"
+            Get-ChildItem "dist" -Recurse |
+              Select-Object FullName, Length |
+              Format-Table -AutoSize
+
+            throw "PyInstaller did not produce dist\SouthParkDownloader.exe."
           }
 
-          Get-ChildItem "dist" -Recurse |
-            Select-Object FullName, Length |
-            Format-Table -AutoSize
+          $file = Get-Item $exe
+
+          Write-Host "PyInstaller build successful."
+          Write-Host "Executable: $($file.FullName)"
+          Write-Host "Size: $($file.Length) bytes"
 
           Write-Host ""
-          Write-Host "===================================="
-          Write-Host ""
+          Write-Host "========================================="
 
       # ------------------------------------------------------------
-      # Normalize portable build directory
+      # Prepare installer input
+      #
+      # PyInstaller produces:
+      #
+      # dist\
+      #   SouthParkDownloader.exe
       #
       # Inno Setup expects:
       #
@@ -106,74 +122,49 @@ jobs:
       #   SouthParkDownloader\
       #       SouthParkDownloader.exe
       #
-      # This step makes sure that structure exists regardless
-      # of how the PyInstaller spec produced the output.
+      # So we create that directory and copy ONLY the executable.
       # ------------------------------------------------------------
       - name: Prepare installer input
         shell: pwsh
         run: |
-          $expected = Join-Path $PWD "dist\SouthParkDownloader"
+          $source = "dist\SouthParkDownloader.exe"
+          $targetDir = "dist\SouthParkDownloader"
+          $target = Join-Path $targetDir "SouthParkDownloader.exe"
 
-          if (Test-Path $expected) {
-            Write-Host "Expected portable directory already exists:"
-            Write-Host $expected
+          if (-not (Test-Path -LiteralPath $source)) {
+            throw "Source executable does not exist: $source"
           }
-          else {
-            Write-Host "dist\SouthParkDownloader does not exist."
-            Write-Host "Searching for PyInstaller output..."
 
-            $exe = Get-ChildItem "dist" -Recurse -Filter "*.exe" -File |
-              Where-Object {
-                $_.Name -notmatch "unins|setup|installer"
-              } |
-              Select-Object -First 1
+          if (Test-Path -LiteralPath $targetDir) {
+            Remove-Item $targetDir -Recurse -Force
+          }
 
-            if (-not $exe) {
-              throw "No executable was produced by PyInstaller."
-            }
+          New-Item `
+            -ItemType Directory `
+            -Path $targetDir `
+            -Force |
+            Out-Null
 
-            Write-Host "Found executable:"
-            Write-Host $exe.FullName
+          Copy-Item `
+            -LiteralPath $source `
+            -Destination $target `
+            -Force
 
-            New-Item -ItemType Directory -Path $expected -Force | Out-Null
-
-            $sourceRoot = $exe.Directory.FullName
-
-            Write-Host "Copying portable application files..."
-            Copy-Item "$sourceRoot\*" $expected -Recurse -Force
+          if (-not (Test-Path -LiteralPath $target)) {
+            throw "Failed to prepare installer input."
           }
 
           Write-Host ""
           Write-Host "========== INSTALLER INPUT =========="
           Write-Host ""
 
-          Get-ChildItem $expected -Recurse |
+          Get-ChildItem $targetDir -Recurse |
             Select-Object FullName, Length |
             Format-Table -AutoSize
 
           Write-Host ""
+          Write-Host "Installer input prepared successfully."
           Write-Host "====================================="
-
-          $files = Get-ChildItem $expected -Recurse -File
-
-          if ($files.Count -eq 0) {
-            throw "dist\SouthParkDownloader exists but contains no files."
-          }
-
-          $mainExe = Get-ChildItem $expected -Filter "*.exe" -File |
-            Where-Object {
-              $_.Name -notmatch "unins|setup|installer"
-            } |
-            Select-Object -First 1
-
-          if (-not $mainExe) {
-            throw "No application executable was found inside dist\SouthParkDownloader."
-          }
-
-          Write-Host ""
-          Write-Host "Portable application ready."
-          Write-Host "Executable: $($mainExe.FullName)"
-          Write-Host "Size: $($mainExe.Length) bytes"
 
       # ------------------------------------------------------------
       # Install Inno Setup
@@ -189,32 +180,47 @@ jobs:
           )
 
           $iscc = $possiblePaths |
-            Where-Object { Test-Path -LiteralPath $_ } |
+            Where-Object {
+              Test-Path -LiteralPath $_
+            } |
             Select-Object -First 1
 
           if (-not $iscc) {
-            Write-Host "Inno Setup installation could not be located."
-
             Write-Host ""
+            Write-Host "Inno Setup could not be located."
+            Write-Host ""
+
             Write-Host "Searching Program Files..."
-            Get-ChildItem "C:\Program Files (x86)" -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like "*Inno*" } |
+            
+            Get-ChildItem "C:\Program Files (x86)" `
+              -Directory `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -like "*Inno*"
+              } |
               Select-Object FullName
 
-            Get-ChildItem "C:\Program Files" -Directory -ErrorAction SilentlyContinue |
-              Where-Object { $_.Name -like "*Inno*" } |
+            Get-ChildItem "C:\Program Files" `
+              -Directory `
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Name -like "*Inno*"
+              } |
               Select-Object FullName
 
             throw "Inno Setup 6 was not found after installation."
           }
 
+          Write-Host ""
           Write-Host "Inno Setup found:"
           Write-Host $iscc
+          Write-Host ""
 
-          "ISCC_PATH=$iscc" | Out-File `
-            -FilePath $env:GITHUB_ENV `
-            -Encoding utf8 `
-            -Append
+          "ISCC_PATH=$iscc" |
+            Out-File `
+              -FilePath $env:GITHUB_ENV `
+              -Encoding utf8 `
+              -Append
 
       # ------------------------------------------------------------
       # Build installer
@@ -230,8 +236,8 @@ jobs:
             throw "ISCC.exe does not exist at: $env:ISCC_PATH"
           }
 
-          if (-not (Test-Path "dist\SouthParkDownloader")) {
-            throw "Installer input directory does not exist: dist\SouthParkDownloader"
+          if (-not (Test-Path -LiteralPath "dist\SouthParkDownloader")) {
+            throw "Installer input directory does not exist."
           }
 
           Write-Host ""
@@ -239,13 +245,6 @@ jobs:
           Write-Host ""
           Write-Host "Inno Setup:"
           Write-Host $env:ISCC_PATH
-
-          Write-Host ""
-          Write-Host "Installer source:"
-          Write-Host (Join-Path $PWD "dist\SouthParkDownloader")
-
-          Write-Host ""
-          Write-Host "Running Inno Setup..."
           Write-Host ""
 
           & $env:ISCC_PATH "packaging\SouthParkDownloader.iss"
@@ -256,6 +255,7 @@ jobs:
 
           Write-Host ""
           Write-Host "Inno Setup completed successfully."
+          Write-Host "========================================="
 
       # ------------------------------------------------------------
       # Verify installer
@@ -263,30 +263,32 @@ jobs:
       - name: Verify installer
         shell: pwsh
         run: |
-          Write-Host ""
-          Write-Host "========== VERIFYING INSTALLER =========="
-          Write-Host ""
+          $installerDir = "dist\installer"
 
-          if (-not (Test-Path "dist\installer")) {
-            throw "dist\installer directory was not created."
+          if (-not (Test-Path -LiteralPath $installerDir)) {
+            throw "Installer directory was not created: $installerDir"
           }
 
-          $installer = Get-ChildItem "dist\installer\*.exe" -File |
+          $installer = Get-ChildItem `
+            $installerDir `
+            -Filter "*.exe" `
+            -File |
             Select-Object -First 1
 
           if (-not $installer) {
-            throw "No installer executable was created in dist\installer."
+            throw "No installer executable was created."
           }
 
-          Write-Host "Installer created successfully:"
-          Write-Host $installer.FullName
-          Write-Host "Size: $($installer.Length) bytes"
-
           Write-Host ""
-          Write-Host "Installer directory:"
-          Get-ChildItem "dist\installer" |
-            Select-Object Name, Length |
-            Format-Table -AutoSize
+          Write-Host "========== INSTALLER VERIFIED =========="
+          Write-Host ""
+          Write-Host "File:"
+          Write-Host $installer.FullName
+          Write-Host ""
+          Write-Host "Size:"
+          Write-Host "$($installer.Length) bytes"
+          Write-Host ""
+          Write-Host "========================================="
 
       # ------------------------------------------------------------
       # Create portable ZIP
@@ -296,7 +298,7 @@ jobs:
         run: |
           $zip = "dist\SouthParkDownloader-${{ github.ref_name }}-portable.zip"
 
-          if (Test-Path $zip) {
+          if (Test-Path -LiteralPath $zip) {
             Remove-Item $zip -Force
           }
 
@@ -305,15 +307,19 @@ jobs:
             -DestinationPath $zip `
             -CompressionLevel Optimal
 
-          if (-not (Test-Path $zip)) {
+          if (-not (Test-Path -LiteralPath $zip)) {
             throw "Portable ZIP was not created."
           }
 
+          $zipFile = Get-Item $zip
+
+          Write-Host ""
           Write-Host "Portable ZIP created:"
-          Write-Host $zip
+          Write-Host $zipFile.FullName
+          Write-Host "Size: $($zipFile.Length) bytes"
 
       # ------------------------------------------------------------
-      # Upload workflow artifacts
+      # Upload artifacts
       # ------------------------------------------------------------
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
