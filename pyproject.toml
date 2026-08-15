@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "southpark-downloader"
+version = "3.7.0"
+description = "South Park metadata, authorized media download queue and library manager"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.9,<7",
+    "httpx>=0.28,<1",
+    "imageio-ffmpeg>=0.6,<1",
+]
+
+[project.scripts]
+spdownloader = "app.main:main"

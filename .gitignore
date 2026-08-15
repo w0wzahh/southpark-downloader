@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.vscode/
+.idea/
+data/*.db
+data/*.sqlite
+downloads/*
+!downloads/.gitkeep
+cache/*
+!cache/.gitkeep
+*.part
+*.tmp
+.env
+*.log
+.DS_Store
+Thumbs.db
+
+# Release/build output
+build/
+dist/
+*.spec.bak
