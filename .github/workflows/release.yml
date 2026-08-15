@@ -14,84 +14,211 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # Python
+      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
 
+      # ------------------------------------------------------------
+      # Dependencies
+      # ------------------------------------------------------------
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest pyinstaller
+          python -m pip install -r requirements.txt
+          python -m pip install pytest pyinstaller
 
+      # ------------------------------------------------------------
+      # Tests
+      # ------------------------------------------------------------
       - name: Run tests
         shell: pwsh
         run: |
           python -m pytest -q
 
+      # ------------------------------------------------------------
+      # Clean previous build directories
+      # ------------------------------------------------------------
+      - name: Clean build directories
+        shell: pwsh
+        run: |
+          if (Test-Path "build") {
+            Remove-Item "build" -Recurse -Force
+          }
+
+          if (Test-Path "dist") {
+            Remove-Item "dist" -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+
+      # ------------------------------------------------------------
+      # Build PyInstaller application
+      # ------------------------------------------------------------
       - name: Build portable application
         shell: pwsh
         run: |
-          python -m PyInstaller --clean --noconfirm packaging\SouthParkDownloader.spec
+          python -m PyInstaller `
+            --clean `
+            --noconfirm `
+            --distpath "dist" `
+            packaging\SouthParkDownloader.spec
 
-      - name: Locate Inno Setup
+      # ------------------------------------------------------------
+      # Inspect PyInstaller output
+      # ------------------------------------------------------------
+      - name: Inspect PyInstaller output
         shell: pwsh
         run: |
-          Write-Host "Searching for Inno Setup..."
+          Write-Host ""
+          Write-Host "========== DIST DIRECTORY =========="
+          Write-Host ""
 
-          $candidates = @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
-            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe",
-            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path "dist")) {
+            throw "dist directory was not created."
+          }
+
+          Get-ChildItem "dist" -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+
+          Write-Host ""
+          Write-Host "===================================="
+          Write-Host ""
+
+      # ------------------------------------------------------------
+      # Normalize portable build directory
+      #
+      # Inno Setup expects:
+      #
+      # dist\
+      #   SouthParkDownloader\
+      #       SouthParkDownloader.exe
+      #
+      # This step makes sure that structure exists regardless
+      # of how the PyInstaller spec produced the output.
+      # ------------------------------------------------------------
+      - name: Prepare installer input
+        shell: pwsh
+        run: |
+          $expected = Join-Path $PWD "dist\SouthParkDownloader"
+
+          if (Test-Path $expected) {
+            Write-Host "Expected portable directory already exists:"
+            Write-Host $expected
+          }
+          else {
+            Write-Host "dist\SouthParkDownloader does not exist."
+            Write-Host "Searching for PyInstaller output..."
+
+            $exe = Get-ChildItem "dist" -Recurse -Filter "*.exe" -File |
+              Where-Object {
+                $_.Name -notmatch "unins|setup|installer"
+              } |
+              Select-Object -First 1
+
+            if (-not $exe) {
+              throw "No executable was produced by PyInstaller."
+            }
+
+            Write-Host "Found executable:"
+            Write-Host $exe.FullName
+
+            New-Item -ItemType Directory -Path $expected -Force | Out-Null
+
+            $sourceRoot = $exe.Directory.FullName
+
+            Write-Host "Copying portable application files..."
+            Copy-Item "$sourceRoot\*" $expected -Recurse -Force
+          }
+
+          Write-Host ""
+          Write-Host "========== INSTALLER INPUT =========="
+          Write-Host ""
+
+          Get-ChildItem $expected -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+
+          Write-Host ""
+          Write-Host "====================================="
+
+          $files = Get-ChildItem $expected -Recurse -File
+
+          if ($files.Count -eq 0) {
+            throw "dist\SouthParkDownloader exists but contains no files."
+          }
+
+          $mainExe = Get-ChildItem $expected -Filter "*.exe" -File |
+            Where-Object {
+              $_.Name -notmatch "unins|setup|installer"
+            } |
+            Select-Object -First 1
+
+          if (-not $mainExe) {
+            throw "No application executable was found inside dist\SouthParkDownloader."
+          }
+
+          Write-Host ""
+          Write-Host "Portable application ready."
+          Write-Host "Executable: $($mainExe.FullName)"
+          Write-Host "Size: $($mainExe.Length) bytes"
+
+      # ------------------------------------------------------------
+      # Install Inno Setup
+      # ------------------------------------------------------------
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress --yes
+
+          $possiblePaths = @(
+            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
           )
 
-          $iscc = $candidates |
+          $iscc = $possiblePaths |
             Where-Object { Test-Path -LiteralPath $_ } |
             Select-Object -First 1
 
           if (-not $iscc) {
-            Write-Host "Known locations did not contain ISCC.exe."
-            Write-Host ""
-            Write-Host "Searching the runner filesystem..."
+            Write-Host "Inno Setup installation could not be located."
 
-            $iscc = Get-ChildItem `
-              -Path "C:\Program Files", "C:\Program Files (x86)", "$env:LOCALAPPDATA" `
-              -Filter "ISCC.exe" `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
+            Write-Host ""
+            Write-Host "Searching Program Files..."
+            Get-ChildItem "C:\Program Files (x86)" -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like "*Inno*" } |
+              Select-Object FullName
+
+            Get-ChildItem "C:\Program Files" -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -like "*Inno*" } |
+              Select-Object FullName
+
+            throw "Inno Setup 6 was not found after installation."
           }
 
-          if (-not $iscc) {
-            Write-Host ""
-            Write-Host "PATH:"
-            Write-Host $env:PATH
-
-            Write-Host ""
-            Write-Host "Chocolatey Inno Setup directory:"
-            if (Test-Path "C:\ProgramData\chocolatey\lib\InnoSetup") {
-              Get-ChildItem "C:\ProgramData\chocolatey\lib\InnoSetup" -Recurse |
-                Select-Object -ExpandProperty FullName
-            }
-
-            throw "ISCC.exe could not be found on the Windows runner."
-          }
-
-          Write-Host ""
-          Write-Host "========================================"
           Write-Host "Inno Setup found:"
           Write-Host $iscc
-          Write-Host "========================================"
 
-          "ISCC_PATH=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          "ISCC_PATH=$iscc" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
 
+      # ------------------------------------------------------------
+      # Build installer
+      # ------------------------------------------------------------
       - name: Build installer
         shell: pwsh
         run: |
@@ -103,8 +230,23 @@ jobs:
             throw "ISCC.exe does not exist at: $env:ISCC_PATH"
           }
 
-          Write-Host "Building installer with:"
+          if (-not (Test-Path "dist\SouthParkDownloader")) {
+            throw "Installer input directory does not exist: dist\SouthParkDownloader"
+          }
+
+          Write-Host ""
+          Write-Host "========== BUILDING INSTALLER =========="
+          Write-Host ""
+          Write-Host "Inno Setup:"
           Write-Host $env:ISCC_PATH
+
+          Write-Host ""
+          Write-Host "Installer source:"
+          Write-Host (Join-Path $PWD "dist\SouthParkDownloader")
+
+          Write-Host ""
+          Write-Host "Running Inno Setup..."
+          Write-Host ""
 
           & $env:ISCC_PATH "packaging\SouthParkDownloader.iss"
 
@@ -112,44 +254,79 @@ jobs:
             throw "Inno Setup failed with exit code $LASTEXITCODE."
           }
 
+          Write-Host ""
+          Write-Host "Inno Setup completed successfully."
+
+      # ------------------------------------------------------------
+      # Verify installer
+      # ------------------------------------------------------------
       - name: Verify installer
         shell: pwsh
         run: |
-          $installer = Get-ChildItem "dist\installer\*.exe" -ErrorAction SilentlyContinue |
+          Write-Host ""
+          Write-Host "========== VERIFYING INSTALLER =========="
+          Write-Host ""
+
+          if (-not (Test-Path "dist\installer")) {
+            throw "dist\installer directory was not created."
+          }
+
+          $installer = Get-ChildItem "dist\installer\*.exe" -File |
             Select-Object -First 1
 
           if (-not $installer) {
-            Write-Host "Contents of dist:"
-            if (Test-Path "dist") {
-              Get-ChildItem "dist" -Recurse |
-                Select-Object FullName
-            }
-
-            throw "Installer was not created in dist\installer."
+            throw "No installer executable was created in dist\installer."
           }
 
-          Write-Host "========================================"
-          Write-Host "Installer created successfully"
-          Write-Host "File: $($installer.FullName)"
+          Write-Host "Installer created successfully:"
+          Write-Host $installer.FullName
           Write-Host "Size: $($installer.Length) bytes"
-          Write-Host "========================================"
 
-      - name: Zip portable build
+          Write-Host ""
+          Write-Host "Installer directory:"
+          Get-ChildItem "dist\installer" |
+            Select-Object Name, Length |
+            Format-Table -AutoSize
+
+      # ------------------------------------------------------------
+      # Create portable ZIP
+      # ------------------------------------------------------------
+      - name: Create portable ZIP
         shell: pwsh
         run: |
+          $zip = "dist\SouthParkDownloader-${{ github.ref_name }}-portable.zip"
+
+          if (Test-Path $zip) {
+            Remove-Item $zip -Force
+          }
+
           Compress-Archive `
             -Path "dist\SouthParkDownloader\*" `
-            -DestinationPath "dist\SouthParkDownloader-${{ github.ref_name }}-portable.zip"
+            -DestinationPath $zip `
+            -CompressionLevel Optimal
 
+          if (-not (Test-Path $zip)) {
+            throw "Portable ZIP was not created."
+          }
+
+          Write-Host "Portable ZIP created:"
+          Write-Host $zip
+
+      # ------------------------------------------------------------
+      # Upload workflow artifacts
+      # ------------------------------------------------------------
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: southpark-downloader-windows
+          name: southpark-downloader-windows-${{ github.ref_name }}
           path: |
             dist/SouthParkDownloader-${{ github.ref_name }}-portable.zip
             dist/installer/*.exe
           if-no-files-found: error
 
+      # ------------------------------------------------------------
+      # Create GitHub Release
+      # ------------------------------------------------------------
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
