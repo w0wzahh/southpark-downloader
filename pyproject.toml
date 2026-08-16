@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "southpark-downloader"
-version = "3.7.0"
+version = "3.7.3"
 description = "South Park metadata, authorized media download queue and library manager"
 requires-python = ">=3.11"
 dependencies = [
